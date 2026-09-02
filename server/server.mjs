@@ -24,11 +24,10 @@ const port = Number(process.env.PORT || 8787)
 const bind = process.env.BIND || '127.0.0.1'
 const upstream = (process.env.UPSTREAM_URL || '').replace(/\/$/, '')
 const upstreamToken = process.env.UPSTREAM_TOKEN || ''
-const adminToken = process.env.ADMIN_TOKEN || 'change-me-in-production'
-const keyPepper = process.env.KEY_PEPPER || 'change-me-in-production'
+const keyPepper = process.env.KEY_PEPPER || ''
 
-if (adminToken === 'change-me-in-production' || keyPepper === 'change-me-in-production') console.warn('WARNING: set ADMIN_TOKEN and KEY_PEPPER before exposing the license server')
 if (!upstream) throw new Error('UPSTREAM_URL is required on the server')
+if (!keyPepper) throw new Error('KEY_PEPPER is required on the server')
 
 const emptyStore = () => ({ licenses: [], sessions: [], usage: [] })
 if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
@@ -57,16 +56,6 @@ function json(res, status, payload) {
 }
 function error(res, status, message, code = 'bad_request') { json(res, status, { error: code, message }) }
 function keyFormat(value) { return String(value || '').trim().toUpperCase().replace(/\s+/g, '') }
-function limit(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0 }
-function expiry(value) {
-  if (value === null || value === undefined || value === '') return null
-  const time = Date.parse(String(value)); if (!Number.isFinite(time)) throw new Error('expiresAt 必须是有效的 ISO 日期')
-  return new Date(time).toISOString()
-}
-function makeKey() {
-  const bytes = randomBytes(15).toString('hex').toUpperCase()
-  return `YC-${bytes.slice(0, 5)}-${bytes.slice(5, 10)}-${bytes.slice(10, 15)}-${bytes.slice(15, 20)}-${bytes.slice(20, 30)}`
-}
 function publicLicense(license) { const safe = { ...license }; delete safe.keyHash; delete safe.lastIp; return safe }
 function isExpired(license, at = Date.now()) { return Boolean(license.expiresAt && new Date(license.expiresAt).getTime() <= at) }
 function statusAt(license, at = Date.now()) {
@@ -87,11 +76,6 @@ function getSession(req) {
   const license = store.licenses.find((item) => item.id === session.licenseId)
   if (!license || statusOf(license) !== 'active') return null
   return { session, license }
-}
-function requireAdmin(req, res) {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || ''
-  if (!safeEqual(token, adminToken)) { error(res, 401, '管理员令牌无效', 'admin_unauthorized'); return false }
-  return true
 }
 async function body(req) {
   const chunks = []; let size = 0
@@ -165,13 +149,6 @@ async function proxy(req, res, pathname) {
   res.end(output)
 }
 
-function adminOverview() {
-  const counts = store.licenses.reduce((acc, license) => { acc[statusOf(license)] = (acc[statusOf(license)] || 0) + 1; return acc }, {})
-  const totals = store.licenses.reduce((acc, license) => { acc.calls += license.usedCalls; acc.chartViews += license.usedChartViews; return acc }, { calls: 0, chartViews: 0 })
-  const chart = Array.from({ length: 14 }, (_, index) => { const day = new Date(Date.now() - (13 - index) * 86400000).toISOString().slice(0, 10); const rows = store.usage.filter((item) => item.day === day); return { day, calls: rows.reduce((sum, item) => sum + item.calls, 0), chartViews: rows.reduce((sum, item) => sum + item.chartViews, 0) } })
-  return { counts, totals, chart, checkedAt: now() }
-}
-
 const gatewayOpenApiPaths = {
   '/api/license/activate': {
     post: {
@@ -210,41 +187,13 @@ async function mergedOpenApi() {
   delete sourceSafe.externalDocs
   const spec = {
     ...sourceSafe,
-    info: { title: 'YCDownload 授权网关 API', version: source.info?.version || '1.0.0', description: 'App 端只调用本文件中 /api/license、/api/usage 和 /api/proxy 路径。业务路径由授权网关转发到受保护服务。' },
+    info: { title: 'DuckDuck 授权网关 API', version: source.info?.version || '1.0.0', description: 'App 端只调用本文件中 /api/license、/api/usage 和 /api/proxy 路径。业务路径由授权网关转发到受保护服务。' },
     servers: [{ url: '/', description: '当前授权中间件' }],
     tags: [...(source.tags || []), { name: '授权' }, { name: '用量' }],
     paths: { ...gatewayOpenApiPaths, ...proxiedPaths },
   }
   upstreamOpenApiCache = { spec, expiresAt: Date.now() + 5 * 60 * 1000 }
   return sanitize(spec)
-}
-async function admin(req, res, pathname) {
-  if (!requireAdmin(req, res)) return
-  if (req.method === 'GET' && pathname === '/api/admin/overview') return json(res, 200, adminOverview())
-  if (req.method === 'GET' && pathname === '/api/admin/licenses') { const status = new URL(req.url, 'http://localhost').searchParams.get('status'); return json(res, 200, { licenses: store.licenses.filter((license) => !status || statusOf(license) === status).map(publicLicense) }) }
-  const match = pathname.match(/^\/api\/admin\/licenses\/([^/]+)(?:\/(revoke|reset-usage|expiry-check|unbind))?$/)
-  if (match) {
-    const license = store.licenses.find((item) => item.id === match[1]); if (!license) return error(res, 404, '卡密不存在', 'not_found')
-    const action = match[2]
-    if (req.method === 'POST' && action === 'revoke') { license.status = license.status === 'revoked' ? 'active' : 'revoked'; await persist(); return json(res, 200, { license: publicLicense(license), status: statusOf(license) }) }
-    if (req.method === 'POST' && action === 'reset-usage') { license.usedCalls = 0; license.usedChartViews = 0; await persist(); return json(res, 200, { license: publicLicense(license) }) }
-    if (req.method === 'POST' && action === 'unbind') { license.deviceCode = null; license.deviceBoundAt = null; store.sessions = store.sessions.filter((item) => item.licenseId !== license.id); await persist(); return json(res, 200, { license: publicLicense(license), status: statusOf(license) }) }
-    if (req.method === 'GET' && action === 'expiry-check') { const candidate = new URL(req.url, 'http://localhost').searchParams.get('at'); const evaluatedAt = candidate ? Date.parse(candidate) : Date.now(); if (!Number.isFinite(evaluatedAt)) return error(res, 400, 'at 必须是有效的 ISO 日期'); return json(res, 200, { id: license.id, expiresAt: license.expiresAt, evaluatedAt: new Date(evaluatedAt).toISOString(), expired: isExpired(license, evaluatedAt), status: statusAt(license, evaluatedAt) }) }
-    if (req.method === 'PATCH' && !action) {
-      let input; try { input = await body(req) } catch (e) { return error(res, 400, e.message) }
-      let nextExpiry = license.expiresAt; if (input.expiresAt !== undefined) { try { nextExpiry = expiry(input.expiresAt) } catch (e) { return error(res, 400, e.message) } }
-      for (const field of ['maxCalls', 'maxChartViews', 'note']) if (input[field] !== undefined) license[field] = field.startsWith('max') ? limit(input[field]) : input[field]
-      license.expiresAt = nextExpiry; await persist(); return json(res, 200, { license: publicLicense(license), status: statusOf(license) })
-    }
-  }
-  if (req.method === 'POST' && pathname === '/api/admin/licenses') {
-    let input; try { input = await body(req) } catch (e) { return error(res, 400, e.message) }
-    let expiresAt; try { expiresAt = expiry(input.expiresAt) } catch (e) { return error(res, 400, e.message) }
-    const count = Math.min(Math.max(Number(input.count) || 1, 1), 100); const created = []
-    for (let index = 0; index < count; index += 1) { const plainKey = makeKey(); const license = { id: id(), keyHash: hash(plainKey), keyPrefix: plainKey.slice(0, 8), status: 'active', deviceCode: null, deviceBoundAt: null, expiresAt, maxCalls: limit(input.maxCalls), usedCalls: 0, maxChartViews: limit(input.maxChartViews), usedChartViews: 0, note: String(input.note || ''), createdAt: now(), lastActivatedAt: null, lastSeenAt: null, lastIp: null }; store.licenses.push(license); created.push({ key: plainKey, license: publicLicense(license) }) }
-    await persist(); return json(res, 201, { created })
-  }
-  return error(res, 404, '管理员接口不存在', 'not_found')
 }
 
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' }
@@ -263,17 +212,15 @@ const server = createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`); const pathname = requestUrl.pathname
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization,content-type,x-device-code,x-yc-feature', 'access-control-allow-methods': 'GET,POST,PATCH,PUT,DELETE,OPTIONS', 'access-control-max-age': '600' }); return res.end() }
   try {
-    if (req.method === 'GET' && pathname === '/health') return json(res, 200, { ok: true, service: 'ycdownload-license-middleware' })
+    if (req.method === 'GET' && pathname === '/health') return json(res, 200, { ok: true, service: 'duckduck-license-middleware' })
     if (req.method === 'GET' && pathname === '/openapi.json') { try { return json(res, 200, await mergedOpenApi()) } catch (e) { return error(res, 502, e.message, 'upstream_openapi_unavailable') } }
-    if (req.method === 'GET' && pathname === '/docs') return json(res, 200, { service: 'YCDownload license middleware', openapi: '/openapi.json', endpoints: { activate: 'POST /api/license/activate', validate: 'GET /api/license/validate', proxy: '/api/proxy/*', chartView: 'POST /api/usage/chart-view', admin: '/api/admin/*' } })
+    if (req.method === 'GET' && pathname === '/docs') return json(res, 200, { service: 'DuckDuck license middleware', openapi: '/openapi.json', endpoints: { activate: 'POST /api/license/activate', validate: 'GET /api/license/validate', proxy: '/api/proxy/*', chartView: 'POST /api/usage/chart-view' } })
     if (pathname.startsWith('/api/license/')) { if (req.method === 'POST' && pathname === '/api/license/activate') return activate(req, res); if (req.method === 'GET' && pathname === '/api/license/validate') return validate(req, res) }
     if (req.method === 'POST' && pathname === '/api/usage/chart-view') return chartView(req, res)
     if (pathname.startsWith('/api/proxy/')) return proxy(req, res, pathname)
-    if (pathname.startsWith('/api/admin/')) return admin(req, res, pathname)
-    if (req.method === 'GET' && pathname === '/admin') { const file = staticPath('/admin.html'); if (file && serveStatic(res, file)) return; return error(res, 503, 'Admin 前端尚未构建，请先运行 npm run build', 'admin_not_built') }
     if (req.method === 'GET' && (pathname === '/' || pathname.startsWith('/assets/'))) { const file = staticPath(pathname === '/' ? '/index.html' : pathname); if (file && serveStatic(res, file)) return }
     return error(res, 404, '接口不存在', 'not_found')
   } catch (e) { console.error(e); return error(res, 500, '服务内部错误', 'internal_error') }
 })
 
-server.listen(port, bind, () => console.log(`YCDownload license middleware listening on http://${bind}:${port}`))
+server.listen(port, bind, () => console.log(`DuckDuck license middleware listening on http://${bind}:${port}`))

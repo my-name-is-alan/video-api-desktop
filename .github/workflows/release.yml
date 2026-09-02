@@ -47,7 +47,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseName: YCDownload v__VERSION__
+          releaseName: DuckDuck v__VERSION__
           releaseBody: Windows NSIS/MSI and macOS DMG.
           releaseDraft: false
           prerelease: false
@@ -56,7 +56,7 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: ycdownload-${{ matrix.artifact }}
+          name: duckduck-${{ matrix.artifact }}
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/nsis/**

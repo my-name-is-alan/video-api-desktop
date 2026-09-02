@@ -86,7 +86,7 @@ fn download_cover_sync(url: String, dest_path: String) -> Result<String, String>
     fs::create_dir_all(parent).map_err(|e| format!("无法创建封面目录: {e}"))?;
   }
   let bytes = reqwest::blocking::Client::builder()
-    .user_agent("YCDownload/0.2")
+    .user_agent("DuckDuck/0.2")
     .timeout(std::time::Duration::from_secs(30))
     .build()
     .map_err(|e| e.to_string())?
@@ -137,11 +137,15 @@ fn run_download(
   fs::create_dir_all(&dir).map_err(|e| format!("无法创建目录: {e}"))?;
 
   let stem = sanitize(&filename);
-  let enc_path = dir.join(format!("{stem}.enc.mp4"));
   let out_path = dir.join(format!("{stem}.mp4"));
+  if out_path.metadata().map(|meta| meta.len() > 0).unwrap_or(false) {
+    return Ok(out_path.to_string_lossy().into_owned());
+  }
+  let task_stem = sanitize(&task_id);
+  let enc_path = dir.join(format!("{stem}.{task_stem}.enc.mp4"));
 
   let mut response = reqwest::blocking::Client::builder()
-    .user_agent("YCDownload/0.2")
+    .user_agent("DuckDuck/0.2")
     .timeout(std::time::Duration::from_secs(600))
     .build()
     .map_err(|e| e.to_string())?
@@ -180,6 +184,13 @@ fn run_download(
   }
   file.flush().ok();
   drop(file);
+
+  // Another copy of the same episode may have completed while this request
+  // was downloading. Keep the first finished file and discard this duplicate.
+  if out_path.metadata().map(|meta| meta.len() > 0).unwrap_or(false) {
+    let _ = fs::remove_file(&enc_path);
+    return Ok(out_path.to_string_lossy().into_owned());
+  }
 
   let key = key_hex.trim().to_lowercase();
   if key.len() == 32 && key.chars().all(|c| c.is_ascii_hexdigit()) {

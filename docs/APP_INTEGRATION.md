@@ -1,4 +1,4 @@
-# YCDownload App 端对接授权中间件
+# DuckDuck App 端对接授权中间件
 
 本文说明 Tauri/React 客户端如何接入授权服务。客户端只知道授权网关地址，不应该知道受保护业务服务的位置。所有搜索、解析、下载、图表等业务请求都必须经过中间件的 `/api/proxy/*`。
 
@@ -24,7 +24,7 @@ App 端通过 `VITE_LICENSE_SERVER_URL` 配置授权服务地址。生产环境�
 VITE_LICENSE_SERVER_URL=https://license.example.com
 ```
 
-不要把 `ADMIN_TOKEN`、`KEY_PEPPER`、`UPSTREAM_TOKEN` 或真实后端地址编译到安装包内。
+不要把 `KEY_PEPPER`、`UPSTREAM_TOKEN` 或真实后端地址编译到安装包内。
 
 ## 2. 获取设备码
 
@@ -88,7 +88,7 @@ Content-Type: application/json
 
 - 卡密第一次激活时绑定 `deviceCode`。
 - 同一卡密提交不同设备码返回 HTTP `409 device_mismatch`。
-- 卡密只保存服务端哈希，明文卡密只在管理员生成时展示一次。
+- 卡密只保存服务端哈希，明文卡密只在发行方生成时展示一次。
 - 当前封装会优先使用 `localStorage`，并在 Tauri 桌面端同步到应用数据目录的 `license-token` 作为 dev origin 变化后的持久化兜底；生产建议替换为 Tauri OS Keychain/凭据存储，避免明文持久化。
 
 客户端调用示例：
@@ -183,25 +183,22 @@ Content-Type: application/json
 | --- | --- | --- |
 | 401 | `unauthorized` | 清理 token，回到激活页 |
 | 403 | `invalid_key` / `expired` / `revoked` | 展示卡密状态，不重试 |
-| 409 | `device_mismatch` | 提示联系管理员换机解绑 |
+| 409 | `device_mismatch` | 提示联系服务支持换机解绑 |
 | 429 | `call_quota_exhausted` | 禁用业务入口，提示调用次数用尽 |
 | 429 | `chart_quota_exhausted` | 不渲染图表，提示观看次数用尽 |
 | 502 | `upstream_unavailable` | 展示后端暂时不可用，可有限重试 |
 
-## 8. 管理员和联调检查
-
-管理员页面：`http://127.0.0.1:8787/admin`。管理员令牌通过 `Authorization: Bearer <ADMIN_TOKEN>` 传递，不要放进 App。
+## 8. 联调检查
 
 完整中间件说明：`http://127.0.0.1:8787/docs`。
 
 联调顺序建议：
 
 1. `GET /health` 确认授权服务启动。
-2. 管理员生成一张短期测试卡密。
+2. 使用发行方提供的短期测试卡密。
 3. App 用当前设备码激活，再用另一串设备码确认 `device_mismatch`。
 4. 调用真实后端的 `/api/health` 或 `/api/search`，确认请求只经过 `/api/proxy/*`。
-5. 将 `maxChartViews` 设为 `1`，第二次图表请求确认 `chart_quota_exhausted`。
-6. 用 `/api/admin/licenses/:id/expiry-check?at=未来 ISO 时间` 验证到期分支。
+5. 将测试卡密的图表配额设为 `1`，第二次图表请求确认 `chart_quota_exhausted`。
 
 设备码并不是硬件级 DRM；客户端可以被逆向或伪造。收费和权限的最终边界必须保持在服务端。当前服务端 JSON 文件适合单实例联调，多实例生产应迁移到 PostgreSQL/Redis。
 
@@ -277,7 +274,7 @@ x-device-code: YC1-...
 }
 ```
 
-`url` 和 `backupUrls` 是有时效的签名地址，只应在实际下载请求期间使用，不要持久化到 Key 管理系统；YCDownload 不提供媒体播放功能。
+`url` 和 `backupUrls` 是有时效的签名地址，只应在实际下载请求期间使用，不要持久化到授权系统；DuckDuck 不提供媒体播放功能。
 
 ### 网站抓取
 

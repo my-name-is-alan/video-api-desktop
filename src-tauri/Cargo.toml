@@ -1,6 +1,6 @@
 [package]
-name = "ycdownload"
-version = "0.1.1"
+name = "duckduck"
+version = "0.1.2"
 description = "A local-first desktop download manager"
 authors = ["you"]
 license = ""

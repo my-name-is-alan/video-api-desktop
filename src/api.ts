@@ -1,4 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
+import {
+  activateLicense,
+  proxyBackend,
+  setLicenseServerUrl,
+  validateLicense,
+} from './license'
 
 export type KeyInfo = {
   status: 'pending' | 'active' | 'expired' | 'disabled'
@@ -120,9 +126,10 @@ const K_KEY = 'yc.apiKey'
 const K_DIR = 'yc.downloadDir'
 const K_MERGE = 'yc.mergeAfter'
 const K_NFO = 'yc.writeNfo'
+const K_MERGE_DEFAULT_VERSION = 'yc.mergeAfterDefaultV2'
 
 export function getApiBase() {
-  return (localStorage.getItem(K_BASE) || '').replace(/\/$/, '')
+  return (localStorage.getItem(K_BASE) || '').trim().replace(/\/+$/, '')
 }
 
 export function getApiKey() {
@@ -134,7 +141,13 @@ export function getDownloadDir() {
 }
 
 export function getMergeAfter() {
-  return localStorage.getItem(K_MERGE) !== '0'
+  return localStorage.getItem(K_MERGE) === '1'
+}
+
+export function migrateMergeDefault() {
+  if (localStorage.getItem(K_MERGE_DEFAULT_VERSION) === '1') return false
+  localStorage.setItem(K_MERGE_DEFAULT_VERSION, '1')
+  return true
 }
 
 export function getWriteNfo() {
@@ -164,7 +177,7 @@ export function saveSettings(
   mergeAfter = getMergeAfter(),
   writeNfo = getWriteNfo(),
 ) {
-  const apiBase = base.replace(/\/$/, '')
+  const apiBase = base.trim().replace(/\/+$/, '')
   const apiKey = key.trim()
   localStorage.setItem(K_BASE, apiBase)
   localStorage.setItem(K_KEY, apiKey)
@@ -184,62 +197,136 @@ export function saveSettings(
   })
 }
 
+let activeDeviceCode = ''
+
+export function configureApi(base: string, deviceCode: string) {
+  activeDeviceCode = deviceCode.trim()
+  setLicenseServerUrl(base)
+}
+
+function licenseToKeyInfo(result: { status?: string; license?: { status?: string; expiresAt?: string | null; createdAt?: string } }): KeyInfo {
+  const license = result.license || {}
+  const status = result.status || license.status || 'disabled'
+  const expiresAt = license.expiresAt || ''
+  const remainSeconds = expiresAt ? Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000)) : 0
+  const mappedStatus: KeyInfo['status'] = status === 'active'
+    ? 'active'
+    : status === 'expired'
+      ? 'expired'
+      : status === 'pending'
+        ? 'pending'
+        : 'disabled'
+  return {
+    status: mappedStatus,
+    expire_time: expiresAt,
+    remain_seconds: remainSeconds,
+    remain_days: remainSeconds / 86400,
+    plan_days: license.createdAt && expiresAt
+      ? Math.max(0, (Date.parse(expiresAt) - Date.parse(license.createdAt)) / 86400000)
+      : 0,
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const base = getApiBase()
-  const key = getApiKey()
-  if (!base) throw new Error('请先填写接口地址')
-  if (!key) throw new Error('请先填写 API Key')
-  const res = await fetch(`${base}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${key}`,
-      Accept: 'application/json',
-      ...(init.headers || {}),
-    },
-  })
-  const text = await res.text()
-  let data: unknown = null
-  try {
-    data = text ? JSON.parse(text) : null
-  } catch {
-    throw new Error(text.slice(0, 160) || `HTTP ${res.status}`)
+  if (!activeDeviceCode) throw new Error('设备信息尚未准备好，请重试')
+  return proxyBackend<T>(path, activeDeviceCode, init)
+}
+
+export async function remaining(deviceCode = activeDeviceCode) {
+  if (!deviceCode) throw new Error('设备信息尚未准备好，请重试')
+  const result = await validateLicense(deviceCode)
+  return result ? licenseToKeyInfo(result) : null
+}
+
+export async function activateKey(key = getApiKey(), deviceCode = activeDeviceCode) {
+  if (!key.trim()) throw new Error('请先填写卡密')
+  if (!deviceCode) throw new Error('设备信息尚未准备好，请重试')
+  return licenseToKeyInfo(await activateLicense(key.trim(), deviceCode))
+}
+
+function normalizeSeries(raw: Partial<SeriesHit> & { seriesName?: string; seriesCover?: string }): SeriesHit {
+  return {
+    seriesId: raw.seriesId || '',
+    title: raw.title || raw.seriesName || '',
+    cover: raw.cover || raw.seriesCover || '',
+    tags: raw.tags,
+    actors: raw.actors,
+    celebrities: raw.celebrities,
+    intro: raw.intro,
+    firstVid: raw.firstVid,
+    episodeCnt: raw.episodeCnt,
+    totalEps: raw.totalEps,
+    epCnt: raw.epCnt,
+    episodes: raw.episodes,
+    vidList: raw.vidList,
   }
-  if (!res.ok) {
-    const err = data as { error?: { message?: string }; message?: string }
-    throw new Error(err?.error?.message || err?.message || `HTTP ${res.status}`)
+}
+
+export async function fetchLibrary() {
+  const data = await request<{ series?: Array<Partial<SeriesHit> & { seriesName?: string; seriesCover?: string }>; count?: number }>(
+    '/api/web/category?page_num=1&size=48&sort_type=1',
+  )
+  return { ...data, series: (data.series || []).map(normalizeSeries) }
+}
+
+export async function fetchSearch(q: string) {
+  const data = await request<{ series?: Array<Partial<SeriesHit> & { seriesName?: string; seriesCover?: string }>; actors?: unknown[]; count?: number }>(
+    `/api/web/search?q=${encodeURIComponent(q)}`,
+  )
+  return { ...data, series: (data.series || []).map(normalizeSeries) }
+}
+
+export async function fetchRank(name: string) {
+  const data = await request<{ name?: string; items?: Array<RankItem & { seriesName?: string; seriesCover?: string }> }>(
+    `/api/web/rank/${encodeURIComponent(name)}`,
+  )
+  return {
+    ...data,
+    items: (data.items || []).map((item) => ({
+      ...item,
+      seriesId: item.seriesId || '',
+      title: item.title || item.seriesName || '',
+      cover: item.cover || item.seriesCover || '',
+    })),
   }
-  return data as T
 }
 
-export function remaining() {
-  return request<KeyInfo>('/api/key')
-}
-
-export function activateKey() {
-  return request<KeyInfo>('/api/key/activate', { method: 'POST' })
-}
-
-export function fetchLibrary() {
-  return request<{ series?: SeriesHit[]; count?: number }>('/api/library')
-}
-
-export function fetchSearch(q: string) {
-  return request<{ series?: SeriesHit[]; actors?: unknown[]; count?: number }>(`/api/search?q=${encodeURIComponent(q)}`)
-}
-
-export function fetchRank(name: string) {
-  return request<{ name?: string; items?: RankItem[] }>(`/api/web/rank/${name}`)
+async function fetchSeriesViaGateway(id: string) {
+  const data = await request<Partial<SeriesDetail> & { seriesName?: string; seriesCover?: string; episodes?: Array<Partial<Episode>> }>(
+    `/api/web/series/${encodeURIComponent(id)}`,
+  )
+  return {
+    seriesId: data.seriesId || id,
+    title: data.title || data.seriesName || id,
+    cover: data.cover || data.seriesCover,
+    intro: data.intro,
+    tags: data.tags,
+    actors: data.actors,
+    celebrities: data.celebrities,
+    totalEps: data.totalEps,
+    episodes: (data.episodes || [])
+      .map((episode) => ({ ep: Number(episode.ep) || 0, vid: episode.vid || '', title: episode.title, local: episode.local }))
+      .filter((episode) => episode.ep > 0 && episode.vid),
+  } satisfies SeriesDetail
 }
 
 export function fetchSeries(id: string) {
-  return request<SeriesDetail>(`/api/series/${encodeURIComponent(id)}`)
+  return fetchSeriesViaGateway(id)
 }
 
 export function fetchWebSeries(id: string) {
-  return request<SeriesDetail>(`/api/web/series/${encodeURIComponent(id)}`)
+  return fetchSeriesViaGateway(id)
 }
 
-
-export function fetchCdn(vid: string) {
-  return request<CdnInfo>(`/api/ep/${encodeURIComponent(vid)}/cdn?quality=1080p`)
+export async function fetchCdn(vid: string) {
+  const data = await request<CdnInfo & { backup_urls?: string[]; url_expire?: number }>(
+    `/api/ep/${encodeURIComponent(vid)}/cdn?quality=1080p`,
+  )
+  return {
+    ...data,
+    vid: data.vid || vid,
+    quality: data.quality || '1080p',
+    backupUrls: data.backupUrls || data.backup_urls,
+    urlExpire: data.urlExpire || data.url_expire,
+  }
 }

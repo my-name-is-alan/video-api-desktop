@@ -113,10 +113,16 @@ fn search_dirs() -> Vec<PathBuf> {
 }
 
 fn resolve_binary(name: &str) -> String {
-  let env_name = if name == "ffmpeg" { "YCDOWNLOAD_FFMPEG" } else { "YCDOWNLOAD_FFPROBE" };
-  if let Ok(value) = std::env::var(env_name) {
-    if !value.trim().is_empty() && Path::new(&value).exists() {
-      return value;
+  let env_names = if name == "ffmpeg" {
+    ["DUCKDUCK_FFMPEG", "YCDOWNLOAD_FFMPEG"]
+  } else {
+    ["DUCKDUCK_FFPROBE", "YCDOWNLOAD_FFPROBE"]
+  };
+  for env_name in env_names {
+    if let Ok(value) = std::env::var(env_name) {
+      if !value.trim().is_empty() && Path::new(&value).exists() {
+        return value;
+      }
     }
   }
 
@@ -470,4 +476,3 @@ mod tests {
     assert!(result.contains("<uniqueid type=\"tmdb\" default=\"true\">123</uniqueid>"));
   }
 }
-

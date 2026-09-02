@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "YCDownload",
-  "version": "0.1.1",
+  "productName": "DuckDuck",
+  "version": "0.1.2",
   "identifier": "app.ycdownload.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "YCDownload",
+        "title": "DuckDuck",
         "width": 1280,
         "height": 820,
         "minWidth": 980,

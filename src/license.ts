@@ -25,8 +25,13 @@ export type License = {
   lastSeenAt: string | null
 }
 
-const serverUrl = (import.meta.env.VITE_LICENSE_SERVER_URL || 'http://127.0.0.1:8787').replace(/\/$/, '')
+let serverUrl = (import.meta.env.VITE_LICENSE_SERVER_URL || 'http://127.0.0.1:8787').trim().replace(/\/+$/, '')
 const tokenStorageKey = 'ycdownload-license-token'
+
+export function setLicenseServerUrl(value: string) {
+  const next = value.trim().replace(/\/+$/, '')
+  if (next) serverUrl = next
+}
 
 class LicenseRequestError extends Error {
   status: number
@@ -62,14 +67,15 @@ async function clearToken() {
 }
 
 async function browserFingerprint(): Promise<DeviceFingerprint> {
-  const raw = [navigator.userAgent, navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width, screen.height].join('|')
+  const raw = [navigator.userAgent, navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone].join('|')
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))
   const deviceCode = `WEB1-${Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase()}`
   return { deviceCode, operatingSystem: 'browser', macAddress: 'unavailable', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, language: navigator.language, motherboard: 'unavailable', memory: 'unavailable', disk: 'unavailable' }
 }
 
 export async function getDeviceFingerprint(): Promise<DeviceFingerprint> {
-  try { return await invoke<DeviceFingerprint>('get_device_fingerprint') } catch { return browserFingerprint() }
+  if (!('__TAURI_INTERNALS__' in window)) return browserFingerprint()
+  return invoke<DeviceFingerprint>('get_device_fingerprint')
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -92,8 +98,11 @@ export async function validateLicense(deviceCode: string) {
   try {
     return await request<{ license: License; status: string }>('/api/license/validate', { headers: { authorization: `Bearer ${token}`, 'x-device-code': deviceCode } })
   } catch (error) {
-    if (error instanceof LicenseRequestError && [401, 403, 409].includes(error.status)) await clearToken()
-    return null
+    if (error instanceof LicenseRequestError && [401, 403, 409].includes(error.status)) {
+      await clearToken()
+      return null
+    }
+    throw error
   }
 }
 

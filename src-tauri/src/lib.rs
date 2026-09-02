@@ -48,15 +48,15 @@ pub fn run() {
 
       #[cfg(desktop)]
       {
-        let open_item = MenuItemBuilder::with_id("open", "打开 YCDownload").build(app)?;
-        let quit_item = MenuItemBuilder::with_id("quit", "退出 YCDownload").build(app)?;
+        let open_item = MenuItemBuilder::with_id("open", "打开 DuckDuck").build(app)?;
+        let quit_item = MenuItemBuilder::with_id("quit", "退出 DuckDuck").build(app)?;
         let tray_menu = MenuBuilder::new(app)
           .items(&[&open_item, &quit_item])
           .build()?;
 
         TrayIconBuilder::with_id("main-tray")
           .icon(app.default_window_icon().cloned().expect("default app icon is required"))
-          .tooltip("YCDownload")
+          .tooltip("DuckDuck")
           .menu(&tray_menu)
           .show_menu_on_left_click(false)
           .on_menu_event(|app, event| match event.id().as_ref() {
@@ -88,7 +88,7 @@ pub fn run() {
 
 #[tauri::command]
 fn get_app_version() -> String {
-  format!("YCDownload v{}", env!("CARGO_PKG_VERSION"))
+  format!("DuckDuck v{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn license_token_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -131,7 +131,7 @@ struct AppPrefs {
   api_key: String,
   #[serde(default)]
   download_dir: String,
-  #[serde(default = "default_true")]
+  #[serde(default = "default_false")]
   merge_after: bool,
   #[serde(default = "default_true")]
   write_nfo: bool,
@@ -139,6 +139,10 @@ struct AppPrefs {
 
 fn default_true() -> bool {
   true
+}
+
+fn default_false() -> bool {
+  false
 }
 
 fn prefs_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -155,7 +159,7 @@ fn load_prefs(app: tauri::AppHandle) -> Result<AppPrefs, String> {
       api_base: String::new(),
       api_key: String::new(),
       download_dir: String::new(),
-      merge_after: true,
+      merge_after: false,
       write_nfo: true,
     });
   }
