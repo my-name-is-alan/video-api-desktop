@@ -46,11 +46,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: YCDownload ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: YCDownload v__VERSION__
           releaseBody: Windows NSIS/MSI and macOS DMG.
           releaseDraft: false
           prerelease: false
+
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
