@@ -375,7 +375,7 @@ fn license_http_sync(
     return Err("不支持的授权请求方法".into());
   }
   let client = reqwest::blocking::Client::builder()
-    .user_agent("DuckDuck/0.1.2")
+    .user_agent(concat!("DuckDuck/", env!("CARGO_PKG_VERSION")))
     .timeout(std::time::Duration::from_secs(30))
     .build()
     .map_err(|error| format!("无法创建授权客户端：{error}"))?;
