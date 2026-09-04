@@ -78,10 +78,41 @@ export async function getDeviceFingerprint(): Promise<DeviceFingerprint> {
   return invoke<DeviceFingerprint>('get_device_fingerprint')
 }
 
+function headerRecord(headers?: HeadersInit): Record<string, string> {
+  const out: Record<string, string> = { 'content-type': 'application/json' }
+  if (!headers) return out
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => { out[key] = value })
+    return out
+  }
+  if (Array.isArray(headers)) {
+    for (const [key, value] of headers) out[key] = value
+    return out
+  }
+  return { ...out, ...headers }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${serverUrl}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(init.headers || {}) } })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new LicenseRequestError(payload.message || '授权服务请求失败', response.status, payload.error)
+  const headers = headerRecord(init.headers)
+  let status = 0
+  let payload: { message?: string; error?: string } = {}
+  if ('__TAURI_INTERNALS__' in window) {
+    const result = await invoke<{ status: number; body: string }>('license_http', {
+      url: `${serverUrl}${path}`,
+      method: (init.method || 'GET').toUpperCase(),
+      headers,
+      body: typeof init.body === 'string' ? init.body : null,
+    })
+    status = result.status
+    try { payload = JSON.parse(result.body || '{}') } catch { payload = {} }
+  } else {
+    const response = await fetch(`${serverUrl}${path}`, { ...init, headers })
+    status = response.status
+    payload = await response.json().catch(() => ({}))
+  }
+  if (status < 200 || status >= 300) {
+    throw new LicenseRequestError(payload.message || '授权服务请求失败', status, payload.error)
+  }
   return payload as T
 }
 
