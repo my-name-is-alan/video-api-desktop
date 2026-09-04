@@ -17,15 +17,15 @@ pub struct DownloadProgress {
 
 #[tauri::command]
 pub fn pick_directory() -> Result<Option<String>, String> {
-  let output = Command::new("powershell")
-    .args([
-      "-NoProfile",
-      "-STA",
-      "-Command",
-      "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '选择下载目录'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }",
-    ])
-    .output()
-    .map_err(|e| e.to_string())?;
+  let mut command = Command::new("powershell.exe");
+  command.args([
+    "-NoProfile",
+    "-STA",
+    "-Command",
+    "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '选择下载目录'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }",
+  ]);
+  media::hide_console(&mut command);
+  let output = command.output().map_err(|e| e.to_string())?;
   let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
   if path.is_empty() {
     Ok(None)
@@ -195,28 +195,34 @@ fn run_download(
   let key = key_hex.trim().to_lowercase();
   if key.len() == 32 && key.chars().all(|c| c.is_ascii_hexdigit()) {
     let ffmpeg = media::ffmpeg_bin();
-    let status = Command::new(&ffmpeg)
-      .args([
-        "-y",
-        "-decryption_key",
-        &key,
-        "-i",
-        enc_path.to_str().unwrap_or_default(),
-        "-c",
-        "copy",
-        out_path.to_str().unwrap_or_default(),
-      ])
-      .status();
+    let mut command = Command::new(&ffmpeg);
+    command.args([
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-decryption_key",
+      &key,
+      "-i",
+      enc_path.to_str().unwrap_or_default(),
+      "-c",
+      "copy",
+      out_path.to_str().unwrap_or_default(),
+    ]);
+    media::hide_console(&mut command);
+    let status = command.output();
     match status {
-      Ok(code) if code.success() && out_path.exists() => {
+      Ok(output) if output.status.success() && out_path.exists() => {
         let _ = fs::remove_file(&enc_path);
         return Ok(out_path.to_string_lossy().into_owned());
       }
-      Ok(code) => {
-        return Err(format!(
-          "解密失败 (ffmpeg {code})，密文已保留: {}",
-          enc_path.display()
-        ));
+      Ok(output) => {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+          format!("解密失败 (ffmpeg {})，密文已保留: {}", output.status, enc_path.display())
+        } else {
+          format!("解密失败：{detail}，密文已保留: {}", enc_path.display())
+        });
       }
       Err(e) => {
         return Err(format!(

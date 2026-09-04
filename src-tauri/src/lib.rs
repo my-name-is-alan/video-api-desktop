@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::os::windows::process::CommandExt;
 
 mod media;
+mod update;
 mod download;
 
 #[cfg(desktop)]
@@ -84,6 +85,7 @@ pub fn run() {
           })
           .build(app)?;
       }
+      update::spawn(app.handle().clone());
 
       Ok(())
     })

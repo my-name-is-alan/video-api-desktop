@@ -167,6 +167,11 @@ label.on {
   margin-bottom: 16px;
 }
 
+.banner.update {
+  background: #1c2a3a;
+  color: #c8ddff;
+}
+
 .toolbar {
   display: flex;
   align-items: baseline;

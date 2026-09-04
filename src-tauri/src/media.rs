@@ -2,7 +2,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+pub(crate) fn hide_console(command: &mut Command) {
+  command.stdin(Stdio::null());
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+  }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,8 +152,10 @@ fn resolve_binary(name: &str) -> String {
 }
 
 fn can_run(binary: &str) -> bool {
-  Command::new(binary)
-    .arg("-version")
+  let mut command = Command::new(binary);
+  command.arg("-version");
+  hide_console(&mut command);
+  command
     .output()
     .map(|output| output.status.success())
     .unwrap_or(false)
@@ -182,9 +194,12 @@ pub fn probe_media(path: String) -> Result<MediaProbe, String> {
   }
 
   let ffprobe = resolve_binary("ffprobe");
-  let output = Command::new(&ffprobe)
+  let mut command = Command::new(&ffprobe);
+  command
     .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
-    .arg(&media_path)
+    .arg(&media_path);
+  hide_console(&mut command);
+  let output = command
     .output()
     .map_err(|error| format!("无法启动 FFprobe（{ffprobe}）：{error}"))?;
   if !output.status.success() {
@@ -276,11 +291,7 @@ fn merge_collections_sync(input_paths: Vec<String>, output_path: String) -> Resu
       "copy",
     ])
     .arg(&output_name);
-  #[cfg(windows)]
-  {
-    use std::os::windows::process::CommandExt;
-    command.creation_flags(0x08000000);
-  }
+  hide_console(&mut command);
   let result = command
     .output()
     .map_err(|error| format!("无法启动 FFmpeg（{ffmpeg}）：{error}"));

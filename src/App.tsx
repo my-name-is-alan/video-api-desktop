@@ -127,6 +127,24 @@ function seasonDir(root: string, title: string) {
 }
 
 
+function seriesDownloadPct(eps: Task[], phase: SeriesPhase, mergeFailed: boolean): number {
+  if (phase === 'done' || phase === 'merging' || mergeFailed) return 100
+  if (eps.length === 0) return 0
+  const known = eps.filter((task) => task.total > 0)
+  const averageSize = known.length
+    ? known.reduce((sum, task) => sum + task.total, 0) / known.length
+    : 0
+  if (averageSize <= 0) {
+    return Math.round((eps.filter((task) => task.status === 'done').length / eps.length) * 100)
+  }
+  const expected = eps.reduce((sum, task) => sum + (task.total > 0 ? task.total : averageSize), 0)
+  const got = eps.reduce((sum, task) => {
+    if (task.status === 'done') return sum + (task.total > 0 ? task.total : averageSize)
+    return sum + task.received
+  }, 0)
+  return Math.max(0, Math.min(100, Math.round((got / expected) * 100)))
+}
+
 function groupSeries(tasks: Task[]): SeriesGroup[] {
   const order: string[] = []
   const map = new Map<string, Task[]>()
@@ -165,8 +183,12 @@ function groupSeries(tasks: Task[]): SeriesGroup[] {
             ? '已完成'
             : '失败'
     const bytes = eps.reduce((sum, task) => sum + task.received, 0)
-    const bytesTotal = eps.reduce((sum, task) => sum + task.total, 0)
-    const pct = total === 0 ? 0 : phase === 'done' || mergeFailed ? 100 : Math.round((done / total) * 100)
+    const knownBytes = eps.filter((task) => task.total > 0)
+    const averageSize = knownBytes.length
+      ? knownBytes.reduce((sum, task) => sum + task.total, 0) / knownBytes.length
+      : 0
+    const bytesTotal = eps.reduce((sum, task) => sum + (task.total > 0 ? task.total : averageSize), 0)
+    const pct = seriesDownloadPct(eps, phase, mergeFailed)
     const ordered = [...eps].sort((a, b) => a.ep - b.ep)
     const epFirst = ordered[0]?.ep || 1
     const epLast = ordered[ordered.length - 1]?.ep || total
@@ -196,7 +218,7 @@ function groupSeries(tasks: Task[]): SeriesGroup[] {
       epLast,
       hint,
       message: `${label}【${done}/${total}】`,
-      pct: bytesTotal > 0 ? Math.round((bytes / bytesTotal) * 100) : pct,
+      pct,
     }
   })
 }
@@ -313,6 +335,9 @@ function App() {
   const [licenseChecked, setLicenseChecked] = useState(false)
   const [authLoading, setAuthLoading] = useState(false)
   const [bootError, setBootError] = useState('')
+  const [updateNotice, setUpdateNotice] = useState('')
+  const [updateError, setUpdateError] = useState(false)
+  const [appVersion, setAppVersion] = useState('')
   const [busy, setBusy] = useState(false)
   const [homeLoading, setHomeLoading] = useState(() => Boolean(getApiBase() && getApiKey()))
   const [searchLoading, setSearchLoading] = useState(false)
@@ -375,6 +400,33 @@ function App() {
       setTasks((list) =>
         list.map((t) => (t.id === p.taskId ? { ...t, received: p.received, total: p.total } : t)),
       )
+    })
+    void promise
+      .then((fn) => {
+        if (cancelled) fn()
+        else unlisten = fn
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    let cancelled = false
+    void invoke<string>('get_app_version')
+      .then((version) => {
+        if (!cancelled) setAppVersion(version)
+      })
+      .catch(() => undefined)
+    let unlisten: (() => void) | undefined
+    const promise = listen<{ status: string; version: string; message: string }>('app-update', (ev) => {
+      const payload = ev.payload
+      if (payload.status === 'checking') return
+      setUpdateError(payload.status === 'error')
+      setUpdateNotice(payload.message)
     })
     void promise
       .then((fn) => {
@@ -925,6 +977,7 @@ function App() {
         </aside>
 
         <main className="main">
+          {updateNotice ? <div className={updateError ? 'banner' : 'banner update'} role="status">{updateNotice}</div> : null}
           {bootError ? <div className="banner" role="alert">{bootError}</div> : null}
           {prefsReady && !ready && nav !== 'settings' ? (
             <section className="gate">
@@ -1118,6 +1171,7 @@ function App() {
           {nav === 'settings' && !detail ? (
             <section className="settings">
               <h1>设置</h1>
+              {appVersion ? <p className="hint">{appVersion} · 启动时自动检查并安装更新</p> : null}
               <h2>下载</h2>
               <label>
                 下载目录
