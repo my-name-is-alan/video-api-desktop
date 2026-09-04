@@ -1,4 +1,18 @@
-import { proxyBackend } from './license'
+import { getApiKey } from './api'
+import { apiRequest } from './license'
+
+function authedRequest<T>(path: string, init: RequestInit = {}) {
+  const key = getApiKey()
+  if (!key) throw new Error('请先填写卡密')
+  return apiRequest<T>(path, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+      ...(init.headers || {}),
+    },
+  })
+}
 
 export type ApiCategoryItem = {
   seriesId?: string
@@ -53,34 +67,34 @@ export type ApiSeriesDetail = {
 
 export type DownloadStartResponse = { jid?: string; jobId?: string; job_id?: string; id?: string; [key: string]: unknown }
 
-export async function fetchCategory(deviceCode: string, page = 1, size = 24) {
-  return proxyBackend<{ series?: ApiCategoryItem[]; total?: number; pageNum?: number }>(`/api/web/category?page_num=${page}&size=${size}&sort_type=1`, deviceCode)
+export async function fetchCategory(_deviceCode: string, page = 1, size = 24) {
+  return authedRequest<{ series?: ApiCategoryItem[]; total?: number; pageNum?: number }>(`/api/web/category?page_num=${page}&size=${size}&sort_type=1`)
 }
 
-export async function fetchSearch(deviceCode: string, keyword: string) {
-  return proxyBackend<{ series?: ApiCategoryItem[]; actors?: unknown[]; count?: number }>(`/api/web/search?q=${encodeURIComponent(keyword)}`, deviceCode)
+export async function fetchSearch(_deviceCode: string, keyword: string) {
+  return authedRequest<{ series?: ApiCategoryItem[]; actors?: unknown[]; count?: number }>(`/api/search?q=${encodeURIComponent(keyword)}`)
 }
 
-export async function fetchRank(deviceCode: string, ranking: 'hot-drama' | 'hot-real-drama' | 'hot-ai-drama' | 'hot-comic-drama', page = 1) {
-  return proxyBackend<{ items?: ApiRankItem[]; count?: number; name?: string }>(`/api/web/rank/${ranking}?page=${page}`, deviceCode)
+export async function fetchRank(_deviceCode: string, ranking: 'hot-drama' | 'hot-real-drama' | 'hot-ai-drama' | 'hot-comic-drama', page = 1) {
+  return authedRequest<{ items?: ApiRankItem[]; count?: number; name?: string }>(`/api/web/rank/${ranking}?page=${page}`)
 }
 
-export async function fetchSeriesDetail(deviceCode: string, seriesId: string) {
-  return proxyBackend<ApiSeriesDetail>(`/api/web/series/${encodeURIComponent(seriesId)}`, deviceCode)
+export async function fetchSeriesDetail(_deviceCode: string, seriesId: string) {
+  return authedRequest<ApiSeriesDetail>(`/api/series/${encodeURIComponent(seriesId)}`)
 }
 
-export async function startSeriesDownload(deviceCode: string, seriesId: string, quality = '1080p') {
-  return proxyBackend<DownloadStartResponse>(`/api/series/${encodeURIComponent(seriesId)}/download?quality=${quality}`, deviceCode, { method: 'POST' })
+export async function startSeriesDownload(_deviceCode: string, seriesId: string, quality = '1080p') {
+  return authedRequest<DownloadStartResponse>(`/api/series/${encodeURIComponent(seriesId)}/download?quality=${quality}`, { method: 'POST' })
 }
 
-export async function fetchJobs(deviceCode: string) {
-  return proxyBackend<{ jobs?: ApiJob[] }>('/api/jobs', deviceCode)
+export async function fetchJobs(_deviceCode: string) {
+  return authedRequest<{ jobs?: ApiJob[] }>('/api/jobs')
 }
 
-export async function fetchJob(deviceCode: string, jobId: string) {
-  return proxyBackend<ApiJob>(`/api/jobs/${encodeURIComponent(jobId)}`, deviceCode)
+export async function fetchJob(_deviceCode: string, jobId: string) {
+  return authedRequest<ApiJob>(`/api/jobs/${encodeURIComponent(jobId)}`)
 }
 
-export async function fetchHealth(deviceCode: string) {
-  return proxyBackend<{ ok?: boolean; time?: string }>('/api/health', deviceCode)
+export async function fetchHealth(_deviceCode: string) {
+  return authedRequest<{ ok?: boolean; time?: string }>('/api/health')
 }

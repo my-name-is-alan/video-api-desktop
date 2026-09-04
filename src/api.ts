@@ -1,10 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import {
-  activateLicense,
-  proxyBackend,
-  setLicenseServerUrl,
-  validateLicense,
-} from './license'
+import { apiRequest, setLicenseServerUrl } from './license'
 
 export type KeyInfo = {
   status: 'pending' | 'active' | 'expired' | 'disabled'
@@ -197,51 +192,30 @@ export function saveSettings(
   })
 }
 
-let activeDeviceCode = ''
-
-export function configureApi(base: string, deviceCode: string) {
-  activeDeviceCode = deviceCode.trim()
+export function configureApi(base: string, _deviceCode = '') {
   setLicenseServerUrl(base)
 }
 
-function licenseToKeyInfo(result: { status?: string; license?: { status?: string; expiresAt?: string | null; createdAt?: string } }): KeyInfo {
-  const license = result.license || {}
-  const status = result.status || license.status || 'disabled'
-  const expiresAt = license.expiresAt || ''
-  const remainSeconds = expiresAt ? Math.max(0, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000)) : 0
-  const mappedStatus: KeyInfo['status'] = status === 'active'
-    ? 'active'
-    : status === 'expired'
-      ? 'expired'
-      : status === 'pending'
-        ? 'pending'
-        : 'disabled'
-  return {
-    status: mappedStatus,
-    expire_time: expiresAt,
-    remain_seconds: remainSeconds,
-    remain_days: remainSeconds / 86400,
-    plan_days: license.createdAt && expiresAt
-      ? Math.max(0, (Date.parse(expiresAt) - Date.parse(license.createdAt)) / 86400000)
-      : 0,
-  }
-}
-
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (!activeDeviceCode) throw new Error('设备信息尚未准备好，请重试')
-  return proxyBackend<T>(path, activeDeviceCode, init)
+  const key = getApiKey()
+  if (!key) throw new Error('请先填写卡密')
+  return apiRequest<T>(path, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+      ...(init.headers || {}),
+    },
+  })
 }
 
-export async function remaining(deviceCode = activeDeviceCode) {
-  if (!deviceCode) throw new Error('设备信息尚未准备好，请重试')
-  const result = await validateLicense(deviceCode)
-  return result ? licenseToKeyInfo(result) : null
+export async function remaining(_deviceCode = '') {
+  return request<KeyInfo>('/api/key')
 }
 
-export async function activateKey(key = getApiKey(), deviceCode = activeDeviceCode) {
+export async function activateKey(key = getApiKey(), _deviceCode = '') {
   if (!key.trim()) throw new Error('请先填写卡密')
-  if (!deviceCode) throw new Error('设备信息尚未准备好，请重试')
-  return licenseToKeyInfo(await activateLicense(key.trim(), deviceCode))
+  return request<KeyInfo>('/api/key/activate', { method: 'POST' })
 }
 
 function normalizeSeries(raw: Partial<SeriesHit> & { seriesName?: string; seriesCover?: string }): SeriesHit {
@@ -264,14 +238,14 @@ function normalizeSeries(raw: Partial<SeriesHit> & { seriesName?: string; series
 
 export async function fetchLibrary() {
   const data = await request<{ series?: Array<Partial<SeriesHit> & { seriesName?: string; seriesCover?: string }>; count?: number }>(
-    '/api/web/category?page_num=1&size=48&sort_type=1',
+    '/api/library',
   )
   return { ...data, series: (data.series || []).map(normalizeSeries) }
 }
 
 export async function fetchSearch(q: string) {
   const data = await request<{ series?: Array<Partial<SeriesHit> & { seriesName?: string; seriesCover?: string }>; actors?: unknown[]; count?: number }>(
-    `/api/web/search?q=${encodeURIComponent(q)}`,
+    `/api/search?q=${encodeURIComponent(q)}`,
   )
   return { ...data, series: (data.series || []).map(normalizeSeries) }
 }
@@ -290,10 +264,9 @@ export async function fetchRank(name: string) {
     })),
   }
 }
-
 async function fetchSeriesViaGateway(id: string) {
   const data = await request<Partial<SeriesDetail> & { seriesName?: string; seriesCover?: string; episodes?: Array<Partial<Episode>> }>(
-    `/api/web/series/${encodeURIComponent(id)}`,
+    `/api/series/${encodeURIComponent(id)}`,
   )
   return {
     seriesId: data.seriesId || id,

@@ -11,26 +11,15 @@ export type DeviceFingerprint = {
   disk: string
 }
 
-export type License = {
-  id: string
-  keyPrefix: string
-  status: string
-  deviceCode: string | null
-  expiresAt: string | null
-  maxCalls: number
-  usedCalls: number
-  maxChartViews: number
-  usedChartViews: number
-  createdAt: string
-  lastSeenAt: string | null
-}
-
-let serverUrl = (import.meta.env.VITE_LICENSE_SERVER_URL || 'http://127.0.0.1:8787').trim().replace(/\/+$/, '')
-const tokenStorageKey = 'ycdownload-license-token'
+let serverUrl = (import.meta.env.VITE_LICENSE_SERVER_URL || '').trim().replace(/\/+$/, '')
 
 export function setLicenseServerUrl(value: string) {
   const next = value.trim().replace(/\/+$/, '')
   if (next) serverUrl = next
+}
+
+export function getLicenseServerUrl() {
+  return serverUrl
 }
 
 class LicenseRequestError extends Error {
@@ -43,27 +32,6 @@ class LicenseRequestError extends Error {
     this.status = status
     this.code = code
   }
-}
-
-async function loadToken() {
-  const browserToken = localStorage.getItem(tokenStorageKey)
-  if (browserToken) {
-    // Migrate an existing dev-origin token into the Tauri app-data fallback.
-    void invoke('save_license_token', { token: browserToken }).catch(() => undefined)
-    return browserToken
-  }
-  try {
-    const persistedToken = await invoke<string | null>('load_license_token')
-    if (persistedToken) localStorage.setItem(tokenStorageKey, persistedToken)
-    return persistedToken
-  } catch {
-    return null
-  }
-}
-
-async function clearToken() {
-  localStorage.removeItem(tokenStorageKey)
-  try { await invoke('clear_license_token') } catch { /* browser dev mode */ }
 }
 
 async function browserFingerprint(): Promise<DeviceFingerprint> {
@@ -79,7 +47,7 @@ export async function getDeviceFingerprint(): Promise<DeviceFingerprint> {
 }
 
 function headerRecord(headers?: HeadersInit): Record<string, string> {
-  const out: Record<string, string> = { 'content-type': 'application/json' }
+  const out: Record<string, string> = {}
   if (!headers) return out
   if (headers instanceof Headers) {
     headers.forEach((value, key) => { out[key] = value })
@@ -89,71 +57,68 @@ function headerRecord(headers?: HeadersInit): Record<string, string> {
     for (const [key, value] of headers) out[key] = value
     return out
   }
-  return { ...out, ...headers }
+  return { ...headers }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+function errorMessage(payload: unknown, status: number, raw: string): string {
+  if (payload && typeof payload === 'object') {
+    if ('error' in payload) {
+      const nested = payload.error
+      if (nested && typeof nested === 'object' && 'message' in nested && typeof nested.message === 'string' && nested.message.trim()) {
+        return nested.message
+      }
+      if (typeof nested === 'string' && nested.trim()) return nested
+    }
+    if ('message' in payload && typeof payload.message === 'string' && payload.message.trim()) return payload.message
+    if ('detail' in payload && typeof payload.detail === 'string' && payload.detail.trim()) return payload.detail
+  }
+  const snippet = raw.replace(/\s+/g, ' ').trim().slice(0, 160)
+  return snippet || `授权服务请求失败 (HTTP ${status})`
+}
+
+function errorCode(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || !('error' in payload)) return undefined
+  const nested = payload.error
+  if (nested && typeof nested === 'object' && 'type' in nested && typeof nested.type === 'string') return nested.type
+  return undefined
+}
+
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!serverUrl) throw new Error('请先填写授权网关地址')
   const headers = headerRecord(init.headers)
+  const body = typeof init.body === 'string' ? init.body : null
+  if (body && !Object.keys(headers).some((key) => key.toLowerCase() === 'content-type')) {
+    headers['content-type'] = 'application/json'
+  }
   let status = 0
-  let payload: { message?: string; error?: string } = {}
+  let raw = ''
   if ('__TAURI_INTERNALS__' in window) {
     const result = await invoke<{ status: number; body: string }>('license_http', {
       url: `${serverUrl}${path}`,
       method: (init.method || 'GET').toUpperCase(),
       headers,
-      body: typeof init.body === 'string' ? init.body : null,
+      body,
     })
     status = result.status
-    try { payload = JSON.parse(result.body || '{}') } catch { payload = {} }
+    raw = result.body || ''
   } else {
     const response = await fetch(`${serverUrl}${path}`, { ...init, headers })
     status = response.status
-    payload = await response.json().catch(() => ({}))
+    raw = await response.text()
+  }
+  let payload: unknown = {}
+  if (raw) {
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      if (status < 200 || status >= 300) {
+        throw new LicenseRequestError(errorMessage(null, status, raw), status)
+      }
+      throw new LicenseRequestError(raw.slice(0, 160) || `HTTP ${status}`, status)
+    }
   }
   if (status < 200 || status >= 300) {
-    throw new LicenseRequestError(payload.message || '授权服务请求失败', status, payload.error)
+    throw new LicenseRequestError(errorMessage(payload, status, raw), status, errorCode(payload))
   }
   return payload as T
 }
-
-export async function activateLicense(key: string, deviceCode: string) {
-  const result = await request<{ token: string; license: License; status: string }>('/api/license/activate', { method: 'POST', body: JSON.stringify({ key, deviceCode }) })
-  localStorage.setItem(tokenStorageKey, result.token)
-  try { await invoke('save_license_token', { token: result.token }) } catch { /* browser dev mode */ }
-  return result
-}
-
-export async function validateLicense(deviceCode: string) {
-  const token = await loadToken()
-  if (!token) return null
-  try {
-    return await request<{ license: License; status: string }>('/api/license/validate', { headers: { authorization: `Bearer ${token}`, 'x-device-code': deviceCode } })
-  } catch (error) {
-    if (error instanceof LicenseRequestError && [401, 403, 409].includes(error.status)) {
-      await clearToken()
-      return null
-    }
-    throw error
-  }
-}
-
-export async function countChartView(deviceCode: string) {
-  const token = await loadToken()
-  if (!token) throw new Error('请先激活卡密')
-  return request<{ allowed: boolean; remaining: number | null }>('/api/usage/chart-view', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'x-device-code': deviceCode }, body: '{}' })
-}
-
-/** All real download/search operations should use this gateway instead of calling
- * the upstream service from the Tauri webview. */
-export async function proxyBackend<T>(path: string, deviceCode: string, init: RequestInit = {}) {
-  const token = await loadToken()
-  if (!token) throw new Error('请先激活卡密')
-  return request<T>(`/api/proxy${path.startsWith('/') ? path : `/${path}`}`, {
-    ...init,
-    headers: { authorization: `Bearer ${token}`, 'x-device-code': deviceCode, ...(init.headers || {}) },
-  })
-}
-
-export function clearLicense() { void clearToken() }
-
-export function getLicenseServerUrl() { return serverUrl }

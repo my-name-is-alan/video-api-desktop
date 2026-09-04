@@ -1,6 +1,6 @@
 [package]
 name = "duckduck"
-version = "0.1.3"
+version = "0.1.4"
 description = "A local-first desktop download manager"
 authors = ["you"]
 license = ""
