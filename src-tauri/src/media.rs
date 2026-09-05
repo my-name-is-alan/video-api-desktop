@@ -233,6 +233,20 @@ pub async fn merge_collections(input_paths: Vec<String>, output_path: String) ->
     .map_err(|e| format!("合并线程中断: {e}"))?
 }
 
+fn concat_list_contents(inputs: &[PathBuf]) -> String {
+  let mut list = String::new();
+  for path in inputs {
+    let name = path
+      .file_name()
+      .map(|value| value.to_string_lossy().into_owned())
+      .unwrap_or_else(|| path.to_string_lossy().replace('\\', "/"));
+    list.push_str("file '");
+    list.push_str(&name.replace('\'', r"'\''"));
+    list.push_str("'\n");
+  }
+  list
+}
+
 fn merge_collections_sync(input_paths: Vec<String>, output_path: String) -> Result<String, String> {
   if input_paths.len() < 2 {
     return Err("至少需要两个媒体文件才能合并".into());
@@ -254,16 +268,8 @@ fn merge_collections_sync(input_paths: Vec<String>, output_path: String) -> Resu
   }
 
   let list_path = parent.join(".ycconcat.txt");
-  let mut list = String::from('\u{FEFF}');
-  for path in &inputs {
-    let name = path
-      .file_name()
-      .map(|value| value.to_string_lossy().into_owned())
-      .unwrap_or_else(|| path.to_string_lossy().replace('\\', "/"));
-    list.push_str("file '");
-    list.push_str(&name.replace('\'', r"'\''"));
-    list.push_str("'\n");
-  }
+  // Concat demuxer treats a UTF-8 BOM as part of the first keyword (`﻿file`).
+  let list = concat_list_contents(&inputs);
   fs::write(&list_path, list).map_err(|error| format!("创建合并清单失败：{error}"))?;
 
   let ffmpeg = resolve_binary("ffmpeg");
@@ -467,7 +473,8 @@ pub fn write_episode_nfo(
 
 #[cfg(test)]
 mod tests {
-  use super::{generate_emby_nfo, EmbyMetadata};
+  use super::{concat_list_contents, generate_emby_nfo, EmbyMetadata};
+  use std::path::PathBuf;
 
   #[test]
   fn nfo_escapes_xml_and_writes_emby_tags() {
@@ -485,5 +492,15 @@ mod tests {
     }).expect("NFO should be generated");
     assert!(result.contains("<title>A &amp; B</title>"));
     assert!(result.contains("<uniqueid type=\"tmdb\" default=\"true\">123</uniqueid>"));
+  }
+
+  #[test]
+  fn concat_list_is_utf8_without_bom() {
+    let list = concat_list_contents(&[
+      PathBuf::from(r"F:\show\ep01.mp4"),
+      PathBuf::from(r"F:\show\O'Brien.mp4"),
+    ]);
+    assert_eq!(list.as_bytes().first().copied(), Some(b'f'));
+    assert_eq!(list, "file 'ep01.mp4'\nfile 'O'\\''Brien.mp4'\n");
   }
 }
